@@ -1,0 +1,69 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+
+import argparse
+import datetime
+import subprocess
+import sys
+
+from enum import Enum
+
+import isodate
+
+class RC(Enum):
+    ok = 0
+    warning = 1
+    critical = 2
+    unknown = 3
+
+def get_dataset_snapshot_date(dataset, tsformat, verbose):
+    zfs_cmd = ['zfs', 'list', '-d', '1', '-t', 'snapshot', '-S', 'creation',
+               '-o', 'name', '-H', dataset]
+    if verbose:
+        print('# ' + ' '.join(zfs_cmd))
+    try:
+        output = subprocess.check_output(zfs_cmd, universal_newlines=True)
+    except subprocess.CalledProcessError:
+        if verbose:
+            print('# Error calling `zfs`', file=sys.stderr)
+        return None
+    lines = output.split('\n')
+    if len(lines) == 0:
+        return None
+    snapshot_name = lines[0].split('@', 1)[-1]
+    try:
+        return datetime.datetime.strptime(snapshot_name, tsformat)
+    except ValueError:
+        if verbose:
+            print('# Unable to parse snapshot "{}" with string "{}"'.format(snapshot_name, tsformat), file=sys.stderr)
+        return None
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('dataset', help='Name of the dataset to check.')
+    parser.add_argument('--tsformat', default='%Y-%m-%d-%H%M%S')
+    parser.add_argument('-v', '--verbose', action='store_true')
+    parser.add_argument('-w', '--warn', type=isodate.parse_duration, required=True,
+                        help='Warning threshold age of most recent snapshot, in ISO 8601 duration string.')
+    parser.add_argument('-c', '--crit', type=isodate.parse_duration, required=True,
+                        help='Critical threshold age of most recent snapshot, in ISO 8601 duration string.')
+    args = parser.parse_args()
+
+    snapshot_date = get_dataset_snapshot_date(args.dataset, args.tsformat, args.verbose)
+    if snapshot_date is None:
+        print('Problem retrieving snapshot age.')
+        exit(RC.unknown.value)
+
+    crit_datetime = datetime.datetime.now() - args.crit
+    warn_datetime = datetime.datetime.now() - args.warn
+
+    if snapshot_date < crit_datetime:
+        print('C: Last snapshot was at {}'.format(snapshot_date))
+        exit(RC.critical.value)
+    if snapshot_date < warn_datetime:
+        print('W: Last snapshot was at {}'.format(snapshot_date))
+        exit(RC.warning.value)
+
+    print('Last snapshot was at {}'.format(snapshot_date))
+    exit(RC.ok.value)
